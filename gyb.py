@@ -66,6 +66,7 @@ import xml.etree.ElementTree as etree
 from urllib.parse import urlencode
 import configparser
 import webbrowser
+import gzip
 
 import httplib2
 import google.oauth2.service_account
@@ -526,9 +527,8 @@ def buildGAPIObject(api):
   except googleapiclient.errors.UnknownApiNameOrVersion:
     disc_file = os.path.join(getProgPath(), '%s-%s.json' % (api, version))
     if os.path.isfile(disc_file):
-      f = file(disc_file, 'r')
-      discovery = f.read()
-      f.close()
+      with open(disc_file, 'r') as f:
+        discovery = f.read()
       return googleapiclient.discovery.build_from_document(discovery,
         base='https://www.googleapis.com', http=httpc)
     else:
@@ -1217,9 +1217,8 @@ def getMessageIDs (sqlconn, backup_folder):
                       WHERE rfc822_msgid IS NULL'''):
     message_full_filename = os.path.join(backup_folder, filename)
     if os.path.isfile(message_full_filename):
-      f = open(message_full_filename, 'r')
-      msgid = header_parser.parse(f, True).get('message-id') or '<DummyMsgID>'
-      f.close()
+      with gzip.open(message_full_filename, 'r') as f:
+        msgid = header_parser.parse(f, True).get('message-id') or '<DummyMsgID>'
       sqlcur.execute(
           'UPDATE messages SET rfc822_msgid = ? WHERE message_num = ?',
                      (msgid, message_num))
@@ -1404,7 +1403,7 @@ def backup_message(request_id, response, exception):
     if 'CHATS' in labelIds: # skip CHATS
       return
     labels = labelIdsToLabels(labelIds)
-    message_file_name = "%s.eml" % (response['id'])
+    message_file_name = "%s.eml.gz" % (response['id'])
     message_time = int(response['internalDate'])/1000
     message_date = time.gmtime(message_time)
     try:
@@ -1422,11 +1421,10 @@ def backup_message(request_id, response, exception):
                                      message_rel_filename)
     if not os.path.isdir(message_full_path):
       os.makedirs(message_full_path)
-    f = open(message_full_filename, 'wb')
     raw_message = str(response['raw'])
     full_message = base64.urlsafe_b64decode(raw_message)
-    f.write(full_message)
-    f.close()
+    with gzip.open(message_full_filename, 'wb') as f:
+      f.write(full_message)
     sqlcur.execute("""
              INSERT INTO messages (
                          message_filename, 
@@ -1712,9 +1710,8 @@ def main(argv):
             message_num))
         print('  this message will be skipped.')
         continue
-      f = open(os.path.join(options.local_folder, message_filename), 'rb')
-      full_message = f.read()
-      f.close()
+      with gzip.open(os.path.join(options.local_folder, message_filename), 'rb') as f:
+        full_message = f.read()
       labels = []
       if not options.strip_labels:
         sqlcur.execute('SELECT DISTINCT label FROM labels WHERE message_num \
@@ -2014,9 +2011,8 @@ def main(argv):
           (os.path.join(options.local_folder, message_filename), message_num))
         print('  this message will be skipped.')
         continue
-      f = open(os.path.join(options.local_folder, message_filename), 'rb')
-      full_message = f.read()
-      f.close()
+      with gzip.open(os.path.join(options.local_folder, message_filename), 'rb') as f:
+        full_message = f.read()
       media = googleapiclient.http.MediaFileUpload(
         os.path.join(options.local_folder, message_filename),
         mimetype='message/rfc822', resumable=True)
