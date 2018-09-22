@@ -1138,7 +1138,7 @@ def message_is_backed_up(message_num, sqlcur, sqlconn, backup_folder):
     sqlresults = sqlcur.fetchall()
     for x in sqlresults:
       filename = x[0]
-      if os.path.isfile(os.path.join(backup_folder, filename)):
+      if check_if_msg_exists_h5(os.path.join(backup_folder, filename)):
         return True
     return False
 
@@ -1456,7 +1456,9 @@ def save_message_h5(message_full_filename,full_message):
   if not os.path.isdir(store_path):
       os.makedirs(store_path)
   with tables.open_file(os.path.join(store_path,store_file),'a',filters=tables.Filters(complevel=7)) as h5f:
-    with filenode.new_node(h5f,where='/',name=msgid) as fnode:
+    if message_id in set([n.name for n in h5f.list_nodes('/')]):
+      h5f.remove_node('/',name=message_id)
+    with filenode.new_node(h5f,where='/',name=message_id) as fnode:
       fnode.write(full_message)
 
 def read_message_h5(message_full_filename):
@@ -1464,6 +1466,19 @@ def read_message_h5(message_full_filename):
   store_file += '.h5'
   with tables.open_file(store_file,'r') as h5f:
     return bytes(h5f.get_node('/',message_id).read())
+
+h5_stored_ids = set()
+def check_if_msg_exists_h5(message_full_filename):
+  global h5_stored_ids
+  store_file, message_id = os.path.split(message_full_filename)
+  store_file += '.h5'
+  if message_id in h5_stored_ids:
+    return True
+  if not os.path.isfile(store_file):
+    return False
+  with tables.open_file(store_file,'r') as h5f:
+    h5_stored_ids |= set([n.name for n in h5f.list_nodes('/')])
+  return message_id in h5_stored_ids
 
 def bytes_to_larger(myval):
   myval = int(myval)
