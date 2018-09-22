@@ -45,6 +45,7 @@ import importlib
 import sys
 import os
 import os.path
+import io
 import time
 import calendar
 import random
@@ -76,6 +77,11 @@ import google.oauth2.id_token
 import googleapiclient
 import googleapiclient.discovery
 import googleapiclient.errors
+
+import tables
+from tables.nodes import filenode
+import warnings
+warnings.simplefilter('ignore',tables.path.NaturalNameWarning)
 
 import fmbox
 import labellang
@@ -1216,12 +1222,14 @@ def getMessageIDs (sqlconn, backup_folder):
                SELECT message_num, message_filename FROM messages 
                       WHERE rfc822_msgid IS NULL'''):
     message_full_filename = os.path.join(backup_folder, filename)
-    if os.path.isfile(message_full_filename):
-      with gzip.open(message_full_filename, 'r') as f:
-        msgid = header_parser.parse(f, True).get('message-id') or '<DummyMsgID>'
-      sqlcur.execute(
-          'UPDATE messages SET rfc822_msgid = ? WHERE message_num = ?',
-                     (msgid, message_num))
+    try:
+      full_message = read_message_h5(message_full_filename)
+    except:
+      continue
+    msgid = header_parser.parsestr(full_message.decode()).get('message-id') or '<DummyMsgID>'
+    sqlcur.execute(
+        'UPDATE messages SET rfc822_msgid = ? WHERE message_num = ?',
+                    (msgid, message_num))
   sqlconn.commit()
  
 def rebuildUIDTable(sqlconn):
@@ -1403,7 +1411,7 @@ def backup_message(request_id, response, exception):
     if 'CHATS' in labelIds: # skip CHATS
       return
     labels = labelIdsToLabels(labelIds)
-    message_file_name = "%s.eml.gz" % (response['id'])
+    message_id = response['id']
     message_time = int(response['internalDate'])/1000
     message_date = time.gmtime(message_time)
     try:
@@ -1413,18 +1421,11 @@ def backup_message(request_id, response, exception):
     message_rel_path = os.path.join(str(message_date.tm_year),
                                     str(message_date.tm_mon),
                                     str(message_date.tm_mday))
-    message_rel_filename = os.path.join(message_rel_path,
-                                        message_file_name)
-    message_full_path = os.path.join(options.local_folder,
-                                     message_rel_path)
-    message_full_filename = os.path.join(options.local_folder,
-                                     message_rel_filename)
-    if not os.path.isdir(message_full_path):
-      os.makedirs(message_full_path)
+    message_rel_filename = os.path.join(message_rel_path,message_id)
+    message_full_filename = os.path.join(options.local_folder,message_rel_filename)
     raw_message = str(response['raw'])
     full_message = base64.urlsafe_b64decode(raw_message)
-    with gzip.open(message_full_filename, 'wb') as f:
-      f.write(full_message)
+    save_message_h5(message_full_filename,full_message)
     sqlcur.execute("""
              INSERT INTO messages (
                          message_filename, 
@@ -1447,6 +1448,22 @@ def _createHttpObj(cache=None, timeout=None):
   if 'tls_minimum_version' in options:
     http_args['tls_minimum_version'] = options.tls_minimum_version
   return httplib2.Http(**http_args)
+
+def save_message_h5(message_full_filename,full_message):
+  store_path, message_id = os.path.split(message_full_filename)
+  store_path, store_file = os.path.split(store_path)
+  store_file += '.h5'
+  if not os.path.isdir(store_path):
+      os.makedirs(store_path)
+  with tables.open_file(os.path.join(store_path,store_file),'a',filters=tables.Filters(complevel=7)) as h5f:
+    with filenode.new_node(h5f,where='/',name=msgid) as fnode:
+      fnode.write(full_message)
+
+def read_message_h5(message_full_filename):
+  store_file, message_id = os.path.split(message_full_filename)
+  store_file += '.h5'
+  with tables.open_file(store_file,'r') as h5f:
+    return bytes(h5f.get_node('/',message_id).read())
 
 def bytes_to_larger(myval):
   myval = int(myval)
@@ -1703,15 +1720,13 @@ def main(argv):
       current += 1
       message_filename = x[2]
       message_num = x[0]
-      if not os.path.isfile(os.path.join(options.local_folder,
-        message_filename)):
-        print('WARNING! file %s does not exist for message %s'
-          % (os.path.join(options.local_folder, message_filename),
-            message_num))
+      message_full_filename = os.path.join(options.local_folder,message_filename)
+      try:
+        full_message = read_message_h5(message_full_filename)
+      except Exception as e:
+        print('WARNING! could not read %s from hdf5 store for message %s' % (message_full_filename, message_num))
         print('  this message will be skipped.')
         continue
-      with gzip.open(os.path.join(options.local_folder, message_filename), 'rb') as f:
-        full_message = f.read()
       labels = []
       if not options.strip_labels:
         sqlcur.execute('SELECT DISTINCT label FROM labels WHERE message_num \
@@ -2005,16 +2020,14 @@ def main(argv):
         (current, restore_count, x[1]))
       message_num = x[0]
       message_filename = x[2]
-      if not os.path.isfile(os.path.join(options.local_folder,
-        message_filename)):
-        print('WARNING! file %s does not exist for message %s' %
-          (os.path.join(options.local_folder, message_filename), message_num))
+      message_full_filename = os.path.join(options.local_folder,message_filename)
+      try:
+        full_message = read_message_h5(message_full_filename)
+      except Exception as e:
+        print('WARNING! could not read %s from hdf5 store for message %s' % (message_full_filename, message_num))
         print('  this message will be skipped.')
         continue
-      with gzip.open(os.path.join(options.local_folder, message_filename), 'rb') as f:
-        full_message = f.read()
-      media = googleapiclient.http.MediaFileUpload(
-        os.path.join(options.local_folder, message_filename),
+      media = googleapiclient.http.MediaIoBaseUpload(io.BytesIO(full_message),
         mimetype='message/rfc822', resumable=True)
       try:
         callGAPI(gmig.archive(), 'insert',
